@@ -23,12 +23,25 @@ impl AzBuf for EquipmentSlots {
 
         loop {
             let equipment_byte = u8::azalea_read(buf)?;
-            let equipment_slot =
-                EquipmentSlot::from_byte(equipment_byte & 127).ok_or_else(|| {
-                    BufReadError::UnexpectedEnumVariant {
-                        id: equipment_byte.into(),
+            let masked = equipment_byte & 127;
+
+            // FIX: если слот неизвестный — читаем item и пропускаем,
+            // не ломая соединение. ReallyWorld шлёт кастомные слоты.
+            let equipment_slot = match EquipmentSlot::from_byte(masked) {
+                Some(s) => s,
+                None => {
+                    eprintln!(
+                        "[SET_EQUIPMENT] unknown slot {} (raw byte {}), skipping",
+                        masked, equipment_byte
+                    );
+                    let _ = ItemStack::azalea_read(buf)?;
+                    if equipment_byte & 128 == 0 {
+                        break;
                     }
-                })?;
+                    continue;
+                }
+            };
+
             let item = ItemStack::azalea_read(buf)?;
             slots.push((equipment_slot, item));
             if equipment_byte & 128 == 0 {
