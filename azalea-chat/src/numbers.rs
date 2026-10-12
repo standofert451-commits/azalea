@@ -60,6 +60,9 @@ fn io_err(e: io::Error) -> BufReadError {
 
 /// Читает NBT-тег из буфера с отладкой и корректной обработкой всех
 /// типов корневых тегов.
+///
+/// ВАЖНО: root_type = 2 в этом контексте означает "compound без имени"
+/// (вариант сериализации Styled в новых версиях Minecraft), а НЕ Short.
 #[cfg(feature = "azalea-buf")]
 fn read_nbt_root_safe(buf: &mut Cursor<&[u8]>) -> Result<Nbt, BufReadError> {
     let start = buf.position();
@@ -81,7 +84,22 @@ fn read_nbt_root_safe(buf: &mut Cursor<&[u8]>) -> Result<Nbt, BufReadError> {
         10 => {
             let res = simdnbt::owned::read_unnamed(buf);
             eprintln!(
-                "[NBT DEBUG] after read_unnamed: pos={} (consumed={}) ok={}",
+                "[NBT DEBUG] (variant 10) after read: pos={} (consumed={}) ok={}",
+                buf.position(),
+                buf.position() - start,
+                res.is_ok()
+            );
+            res.map_err(|e| BufReadError::Custom(format!("NBT read error: {e}")))
+        }
+
+        // FIX: root_type = 2 здесь означает "compound без имени"
+        // (вариант сериализации Styled), а НЕ Short.
+        // Пропускаем байт типа (2) и читаем compound без имени.
+        2 => {
+            buf.set_position(start + 1);
+            let res = simdnbt::owned::read_unnamed(buf);
+            eprintln!(
+                "[NBT DEBUG] (variant 2) after read: pos={} (consumed={}) ok={}",
                 buf.position(),
                 buf.position() - start,
                 res.is_ok()
@@ -92,11 +110,6 @@ fn read_nbt_root_safe(buf: &mut Cursor<&[u8]>) -> Result<Nbt, BufReadError> {
         // END (0) — пусто
         0 => Ok(Nbt::None),
 
-        // Short (2)
-        2 => {
-            buf.set_position(buf.position() + 2);
-            Ok(Nbt::None)
-        }
         // Byte (1)
         1 => {
             buf.set_position(buf.position() + 1);
