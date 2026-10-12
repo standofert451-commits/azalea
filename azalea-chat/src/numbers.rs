@@ -40,8 +40,6 @@ impl AzBuf for NumberFormat {
             NumberFormat::Blank => NumberFormatKind::Blank.azalea_write(buf)?,
             NumberFormat::Styled { style } => {
                 NumberFormatKind::Styled.azalea_write(buf)?;
-                // `Nbt::write` принимает только `&mut Vec<u8>`,
-                // поэтому собираем во временный буфер и пишем в `buf`.
                 let mut tmp = Vec::new();
                 style.write(&mut tmp);
                 buf.write_all(&tmp)?;
@@ -60,10 +58,8 @@ fn io_err(e: io::Error) -> BufReadError {
     BufReadError::Io { source: e }
 }
 
-/// Читает NBT-тег из буфера. Корректно обрабатывает Compound (сетевой NBT
-/// без имени) и пропускает данные для остальных типов корневых тегов
-/// (Byte, Short, Int, Long, Float, Double, ByteArray, String, List,
-/// IntArray, LongArray).
+/// Читает NBT-тег из буфера с отладкой и корректной обработкой всех
+/// типов корневых тегов.
 #[cfg(feature = "azalea-buf")]
 fn read_nbt_root_safe(buf: &mut Cursor<&[u8]>) -> Result<Nbt, BufReadError> {
     let start = buf.position();
@@ -71,13 +67,27 @@ fn read_nbt_root_safe(buf: &mut Cursor<&[u8]>) -> Result<Nbt, BufReadError> {
     buf.read_exact(&mut type_byte).map_err(io_err)?;
     let root_type = type_byte[0];
 
-    // Откатываемся на 1 байт, чтобы `read_unnamed` прочитал всё сам.
+    eprintln!(
+        "[NBT DEBUG] start={} root_type={} remaining={}",
+        start,
+        root_type,
+        buf.get_ref().len() as u64 - start
+    );
+
     buf.set_position(start);
 
     match root_type {
         // Compound (10) — сетевой NBT без имени
-        10 => simdnbt::owned::read_unnamed(buf)
-            .map_err(|e| BufReadError::Custom(format!("NBT read error: {e}"))),
+        10 => {
+            let res = simdnbt::owned::read_unnamed(buf);
+            eprintln!(
+                "[NBT DEBUG] after read_unnamed: pos={} (consumed={}) ok={}",
+                buf.position(),
+                buf.position() - start,
+                res.is_ok()
+            );
+            res.map_err(|e| BufReadError::Custom(format!("NBT read error: {e}")))
+        }
 
         // END (0) — пусто
         0 => Ok(Nbt::None),
@@ -114,7 +124,7 @@ fn read_nbt_root_safe(buf: &mut Cursor<&[u8]>) -> Result<Nbt, BufReadError> {
         }
         // ByteArray (7): i32-длина (байты) + сами байты
         7 => {
-            buf.set_position(buf.position() + 1); // пропустить сам тег-байт
+            buf.set_position(buf.position() + 1);
             let len = read_i32(buf)?;
             if len > 0 {
                 buf.set_position(buf.position() + len as u64);
@@ -128,12 +138,8 @@ fn read_nbt_root_safe(buf: &mut Cursor<&[u8]>) -> Result<Nbt, BufReadError> {
             Ok(Nbt::None)
         }
         // List (9): тип элемента (1 байт) + i32 длина + элементы
-        // Мы не читаем элементы — предполагаем, что для number_format
-        // сервер шлёт Compound или Short. Если вдруг прилетит List —
-        // это будет ошибкой синхронизации, но так пакет хотя бы
-        // не свалится с паникой.
         9 => {
-            buf.set_position(buf.position() + 1); // тег-байт
+            buf.set_position(buf.position() + 1);
             let mut inner_type = [0u8; 1];
             buf.read_exact(&mut inner_type).map_err(io_err)?;
             let _len = read_i32(buf)?;
@@ -159,7 +165,9 @@ fn read_nbt_root_safe(buf: &mut Cursor<&[u8]>) -> Result<Nbt, BufReadError> {
         }
 
         other => {
-            eprintln!("[NBT] Unexpected root tag type: {other}, returning Nbt::None");
+            eprintln!(
+                "[NBT] Unexpected root tag type: {other}, returning Nbt::None"
+            );
             Ok(Nbt::None)
         }
     }
