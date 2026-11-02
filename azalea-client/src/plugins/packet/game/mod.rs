@@ -9,7 +9,8 @@ use azalea_core::{
     position::{ChunkPos, Vec3},
 };
 use azalea_entity::{
-    Dead, EntityBundle, EntityKindComponent, HasClientLoaded, LoadedBy, LocalEntity, LookDirection,
+    Dead, EntityBundle, EntityKindComponent, FishingBobberOwnerIndex, FishingBobberOwnerInfo,
+    HasClientLoaded, LoadedBy, LocalEntity, LookDirection,
     Physics, PlayerAbilities, Position,
     effect_events::{AddEffectEvent, RemoveEffectsEvent},
     indexing::{EntityIdIndex, EntityUuidIndex},
@@ -246,6 +247,11 @@ impl GamePacketHandler<'_> {
                     mut entity_id_index,
                     mut world_holder,
                 ) = query.get_mut(self.player).unwrap();
+
+                // Owner IDs are scoped to this client connection. Clear stale mappings on login.
+                commands
+                    .entity(self.player)
+                    .insert(FishingBobberOwnerIndex::default());
 
                 let new_world_name = WorldName(p.common.dimension.clone());
 
@@ -568,7 +574,13 @@ impl GamePacketHandler<'_> {
 
         as_system::<(
             Commands,
-            Query<(&mut EntityIdIndex, Option<&WorldName>, Option<&TabList>)>,
+            Query<(
+                &mut EntityIdIndex,
+                Option<&WorldName>,
+                Option<&TabList>,
+                &MinecraftEntityId,
+                &mut FishingBobberOwnerIndex,
+            )>,
             Query<&mut LoadedBy>,
             Query<Entity>,
             Res<Worlds>,
@@ -583,8 +595,13 @@ impl GamePacketHandler<'_> {
                 worlds,
                 mut entity_uuid_index,
             )| {
-                let (mut entity_id_index, world_name, tab_list) =
-                    query.get_mut(self.player).unwrap();
+                let (
+                    mut entity_id_index,
+                    world_name,
+                    tab_list,
+                    local_player_id,
+                    mut bobber_owner_index,
+                ) = query.get_mut(self.player).unwrap();
 
                 let entity_id = p.id;
 
@@ -597,6 +614,25 @@ impl GamePacketHandler<'_> {
                 let world = worlds.get(world_name).unwrap();
                 if let Some(&ecs_entity) = world.read().entity_by_id.get(&entity_id) {
                     // entity already exists
+                    // Fishing hook object data (p.data) is the OWNER Minecraft entity ID.
+                    // Store it on this client's local player, never on the shared bobber.
+                    if p.entity_type == EntityKind::FishingBobber {
+                        let owner_id = p.data;
+                        let is_local_owner = owner_id == local_player_id.0;
+                        bobber_owner_index.0.insert(
+                            ecs_entity,
+                            FishingBobberOwnerInfo {
+                                local_player_id: local_player_id.0,
+                                owner_id,
+                                is_local_owner,
+                            },
+                        );
+                        debug!(
+                            "FishingBobberOwnerIndex: client_player_id={} bobber_id={} owner_id={} ecs_entity={ecs_entity:?} local_owner={is_local_owner} path=existing",
+                            local_player_id.0, entity_id.0, owner_id
+                        );
+                    }
+
                     let Ok(mut loaded_by) = loaded_by_query.get_mut(ecs_entity) else {
                         // LoadedBy for this entity isn't in the ecs! figure out what went wrong
                         // and print an error
@@ -642,6 +678,23 @@ impl GamePacketHandler<'_> {
                     &mut entity_uuid_index,
                     &mut world.write(),
                 );
+
+                if p.entity_type == EntityKind::FishingBobber {
+                    let owner_id = p.data;
+                    let is_local_owner = owner_id == local_player_id.0;
+                    bobber_owner_index.0.insert(
+                        ecs_entity,
+                        FishingBobberOwnerInfo {
+                            local_player_id: local_player_id.0,
+                            owner_id,
+                            is_local_owner,
+                        },
+                    );
+                    debug!(
+                        "FishingBobberOwnerIndex: client_player_id={} bobber_id={} owner_id={} ecs_entity={ecs_entity:?} local_owner={is_local_owner} path=spawn",
+                        local_player_id.0, entity_id.0, owner_id
+                    );
+                }
 
                 // add the GameProfileComponent if the uuid is in the tab list
                 if let Some(tab_list) = tab_list {
@@ -939,9 +992,13 @@ impl GamePacketHandler<'_> {
     pub fn remove_entities(&mut self, p: &ClientboundRemoveEntities) {
         debug!("Got remove entities packet {p:?}");
 
-        as_system::<(Query<&mut EntityIdIndex>, Query<&mut LoadedBy>)>(
+        as_system::<(
+            Query<&mut EntityIdIndex>,
+            Query<&mut LoadedBy>,
+            Query<&mut FishingBobberOwnerIndex>,
+        )>(
             self.ecs,
-            |(mut query, mut entity_query)| {
+            |(mut query, mut entity_query, mut owner_index_query)| {
                 let Ok(mut entity_id_index) = query.get_mut(self.player) else {
                     warn!("our local player doesn't have EntityIdIndex");
                     return;
@@ -954,6 +1011,11 @@ impl GamePacketHandler<'_> {
                         );
                         continue;
                     };
+                    // The mapping is per-client and keyed by the shared ECS entity.
+                    if let Ok(mut owner_index) = owner_index_query.get_mut(self.player) {
+                        owner_index.0.remove(&entity);
+                    }
+
                     let Ok(mut loaded_by) = entity_query.get_mut(entity) else {
                         warn!(
                             "tried to despawn entity {id} but it doesn't have a LoadedBy component",
@@ -1379,6 +1441,11 @@ impl GamePacketHandler<'_> {
         )>(
             self.ecs,
             |(mut commands, mut query, mut events, mut worlds, mut loaded_by_query)| {
+                // Entity IDs and bobber ownership mappings are reset across respawn/world change.
+                commands
+                    .entity(self.player)
+                    .insert(FishingBobberOwnerIndex::default());
+
                 let Ok((mut world_holder, game_profile, client_information, world_name)) =
                     query.get_mut(self.player)
                 else {
