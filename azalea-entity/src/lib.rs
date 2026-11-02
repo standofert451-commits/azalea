@@ -14,6 +14,29 @@ pub mod particle;
 mod plugin;
 pub mod vec_delta_codec;
 
+/// Per-client mapping from a shared ECS fishing-bobber entity to the owner
+/// reported by that client's ClientboundAddEntity packet.
+///
+/// This component belongs on the local player entity, NOT on the bobber:
+/// Azalea may share bobber ECS entities between clients, while Minecraft
+/// entity IDs (and therefore bobber owners) are client-local.
+#[cfg(feature = "bevy_ecs")]
+#[derive(bevy_ecs::prelude::Component, Default)]
+pub struct FishingBobberOwnerIndex(
+    pub std::collections::HashMap<bevy_ecs::entity::Entity, FishingBobberOwnerInfo>,
+);
+
+#[cfg(feature = "bevy_ecs")]
+#[derive(Clone, Copy, Debug)]
+pub struct FishingBobberOwnerInfo {
+    /// Local player's Minecraft entity ID for this client connection.
+    pub local_player_id: i32,
+    /// Owner Minecraft entity ID as sent in ClientboundAddEntity.data.
+    pub owner_id: i32,
+    /// Whether owner_id equals this client's local player entity ID.
+    pub is_local_owner: bool,
+}
+
 use std::{
     f64::consts::PI,
     fmt::{self, Debug},
