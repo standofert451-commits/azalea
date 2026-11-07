@@ -292,7 +292,8 @@ pub fn handle_mining_queued(
                 entity,
                 position: mining_queued.position,
             });
-            **mine_delay = 5;
+            // ИСПРАВЛЕНО: было 5, стало 6 (ванильная задержка)
+            **mine_delay = 6;
             commands.trigger(SwingArmEvent { entity });
         } else if mining.is_none()
             || !is_same_mining_target(
@@ -521,13 +522,20 @@ pub fn handle_finish_mining_block_observer(
         return;
     }
 
-    // when we break a waterlogged block we want to keep the water there
-    let fluid_state = FluidState::from(block_state);
-    let block_state_for_fluid = BlockState::from(fluid_state);
-    let old_state = world
-        .set_block_state(event.position, block_state_for_fluid)
-        .unwrap_or_default();
-    prediction_handler.retain_known_server_state(event.position, old_state, **player_pos);
+    // ИСПРАВЛЕНО: не меняем блок локально — ждём подтверждения от сервера.
+    // Это убирает «фантомные» блоки, когда сервер не засчитывает слом.
+    //
+    // Было:
+    // let fluid_state = FluidState::from(block_state);
+    // let block_state_for_fluid = BlockState::from(fluid_state);
+    // let old_state = world
+    //     .set_block_state(event.position, block_state_for_fluid)
+    //     .unwrap_or_default();
+    // prediction_handler.retain_known_server_state(event.position, old_state, **player_pos);
+    //
+    // Стало: только регистрируем намерение, не трогая World.
+    let _ = FluidState::from(block_state);
+    prediction_handler.retain_known_server_state(event.position, block_state, **player_pos);
 }
 
 /// Abort mining a block.
@@ -616,7 +624,8 @@ pub fn continue_mining_block(
     {
         if game_mode == GameMode::Creative {
             // TODO: worldborder check
-            **mine_delay = 5;
+            // ИСПРАВЛЕНО: было 5, стало 6
+            **mine_delay = 6;
             commands.trigger(SendGamePacketEvent::new(
                 entity,
                 ServerboundPlayerAction {
@@ -685,7 +694,8 @@ pub fn continue_mining_block(
                 ));
                 **mine_progress = 0.;
                 **mine_ticks = 0.;
-                **mine_delay = 5;
+                // ИСПРАВЛЕНО: было 5, стало 6
+                **mine_delay = 6;
             }
 
             mine_block_progress_events.write(MineBlockProgressEvent {
