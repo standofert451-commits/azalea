@@ -25,7 +25,6 @@ use crate::{
     packet::game::SendGamePacketEvent,
 };
 
-/// A plugin that allows clients to break blocks in the world.
 pub struct MiningPlugin;
 impl Plugin for MiningPlugin {
     fn build(&self, app: &mut App) {
@@ -66,13 +65,9 @@ impl Plugin for MiningPlugin {
     }
 }
 
-/// The Bevy system set for things related to mining.
 #[derive(Clone, Debug, Eq, Hash, PartialEq, SystemSet)]
 pub struct MiningSystems;
 
-/// A component that simulates the client holding down left click to mine the
-/// block that it's facing, but this only interacts with blocks and not
-/// entities.
 #[derive(Component)]
 pub struct LeftClickMine;
 
@@ -105,7 +100,6 @@ fn handle_auto_mine(
             .as_block_hit_result_if_not_miss()
             .map(|b| b.block_pos);
 
-        // start mining if we're looking at a block and we're not already mining it
         if let Some(block_pos) = block_pos
             && (mining.is_none()
                 || !is_same_mining_target(
@@ -126,33 +120,18 @@ fn handle_auto_mine(
     }
 }
 
-/// Information about the block we're currently mining.
-///
-/// This is only present if we're currently mining a block.
 #[derive(Clone, Component, Debug)]
 #[component(storage = "SparseSet")]
 pub struct Mining {
     pub pos: BlockPos,
     pub dir: Direction,
-    /// See [`MiningQueued::force`].
     pub force: bool,
 }
 
-/// Start mining the block at the given position.
-///
-/// If we're looking at the block then the correct direction will be used,
-/// otherwise it'll be [`Direction::Down`].
 #[derive(Debug, Message)]
 pub struct StartMiningBlockEvent {
     pub entity: Entity,
     pub position: BlockPos,
-    /// Whether we should ignore blocks that are blocking the view of this
-    /// block.
-    ///
-    /// Most of the time, you'll want to set this to true as it'll make the
-    /// behavior more predictable. If it's set to false, then it might fail or
-    /// it might mine blocks other than the one at `position` (which may be
-    /// preferable if you're trying to act like vanilla).
     pub force: bool,
 }
 fn handle_start_mining_block_event(
@@ -168,14 +147,12 @@ fn handle_start_mining_block_event(
                 hit_result.as_block_hit_result_if_not_miss()
                 && block_hit_result.block_pos == event.position
             {
-                // we're looking at the block
                 block_hit_result.direction
             } else {
                 debug!(
                     "Got StartMiningBlockEvent but we're not looking at the block ({hit_result:?}.block_pos != {:?}). Picking an arbitrary direction instead.",
                     event.position
                 );
-                // we're not looking at the block, arbitrary direction
                 Direction::Down
             };
             commands.entity(event.entity).insert(MiningQueued {
@@ -184,8 +161,6 @@ fn handle_start_mining_block_event(
                 force: true,
             });
         } else {
-            // let block_hit_result = hit_result.as_block_hit_result_if_not_miss();
-            // let direction = block_hit_result.map_or(Direction::Down, |b| b.direction);
             if let Some(block_hit_result) = hit_result.as_block_hit_result_if_not_miss()
                 && block_hit_result.block_pos == event.position
             {
@@ -204,12 +179,10 @@ fn handle_start_mining_block_event(
     }
 }
 
-/// Present on entities when they're going to start mining a block next tick.
 #[derive(Clone, Component, Debug)]
 pub struct MiningQueued {
     pub position: BlockPos,
     pub direction: Direction,
-    /// Whether we should mine the block regardless of whether it's reachable.
     pub force: bool,
 }
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
@@ -266,19 +239,14 @@ pub fn handle_mining_queued(
         if check_is_interaction_restricted(&world, mining_queued.position, &game_mode, inventory) {
             continue;
         }
-        // TODO (when world border is implemented): vanilla ignores if the block
-        // is outside of the worldborder
 
         if let Some(mining) = &mut mining {
-            // this matters if we were previously mining a block without force
             if mining_queued.force {
                 mining.force = true;
             }
         }
 
         if game_mode == GameMode::Creative {
-            // In creative mode, first send START_DESTROY_BLOCK packet then immediately
-            // finish mining
             commands.trigger(SendGamePacketEvent::new(
                 entity,
                 ServerboundPlayerAction {
@@ -292,7 +260,6 @@ pub fn handle_mining_queued(
                 entity,
                 position: mining_queued.position,
             });
-            // ИСПРАВЛЕНО: было 5, стало 6 (ванильная задержка)
             **mine_delay = 6;
             commands.trigger(SwingArmEvent { entity });
         } else if mining.is_none()
@@ -304,7 +271,6 @@ pub fn handle_mining_queued(
             )
         {
             if mining.is_some() {
-                // send a packet to stop mining since we just changed target
                 commands.trigger(SendGamePacketEvent::new(
                     entity,
                     ServerboundPlayerAction {
@@ -321,13 +287,11 @@ pub fn handle_mining_queued(
                 .get_block_state(mining_queued.position)
                 .unwrap_or_default();
 
-            // we can't break blocks if they don't have a bounding box
             let block_is_solid = !target_block_state
                 .outline_shape(mining_queued.position)
                 .is_empty();
 
             if block_is_solid && **mine_progress == 0. {
-                // interact with the block (like note block left click) here
                 attack_block_events.write(AttackBlockEvent {
                     entity,
                     position: mining_queued.position,
@@ -346,7 +310,6 @@ pub fn handle_mining_queued(
                     active_effects,
                 ) >= 1.
             {
-                // block was broken instantly (instamined)
                 commands.trigger(FinishMiningBlockEvent {
                     entity,
                     position: mining_queued.position,
@@ -380,8 +343,6 @@ pub fn handle_mining_queued(
                 },
             ));
             commands.trigger(SwingArmEvent { entity });
-            // another swing packet gets sent in the same tick in
-            // continue_mining_block, vanilla does this too
         }
     }
 }
@@ -393,16 +354,12 @@ pub struct MineBlockProgressEvent {
     pub destroy_stage: Option<u32>,
 }
 
-/// A player left clicked on a block, used for stuff like interacting with note
-/// blocks.
 #[derive(Message)]
 pub struct AttackBlockEvent {
     pub entity: Entity,
     pub position: BlockPos,
 }
 
-/// Returns whether the block and item are still the same as when we started
-/// mining.
 fn is_same_mining_target(
     target_block: BlockPos,
     inventory: &Inventory,
@@ -413,7 +370,6 @@ fn is_same_mining_target(
     Some(target_block) == current_mining_pos.0 && held_item == &current_mining_item.0
 }
 
-/// A component bundle for players that can mine blocks.
 #[derive(Bundle, Clone, Default)]
 pub struct MineBundle {
     pub delay: MineDelay,
@@ -423,13 +379,9 @@ pub struct MineBundle {
     pub mine_item: MineItem,
 }
 
-/// A component that counts down until we start mining the next block.
 #[derive(Clone, Component, Debug, Default, Deref, DerefMut)]
 pub struct MineDelay(pub u32);
 
-/// A component that stores the progress of the current mining operation.
-///
-/// This is a value between 0 and 1.
 #[derive(Clone, Component, Debug, Default, Deref, DerefMut)]
 pub struct MineProgress(pub f32);
 
@@ -443,23 +395,15 @@ impl MineProgress {
     }
 }
 
-/// A component that stores the number of ticks that we've been mining the same
-/// block for.
-///
-/// This is a float despite the fact that it should only ever be a round number.
 #[derive(Clone, Component, Debug, Default, Deref, DerefMut)]
 pub struct MineTicks(pub f32);
 
-/// A component that stores the position of the block we're currently mining.
 #[derive(Clone, Component, Debug, Default, Deref, DerefMut)]
 pub struct MineBlockPos(pub Option<BlockPos>);
 
-/// A component that contains the item we're currently using to mine, or
-/// [`ItemStack::Empty`] if nothing is being mined.
 #[derive(Clone, Component, Debug, Default, Deref, DerefMut)]
 pub struct MineItem(pub ItemStack);
 
-/// A trigger that's sent when we completed mining a block.
 #[derive(EntityEvent)]
 pub struct FinishMiningBlockEvent {
     pub entity: Entity,
@@ -522,23 +466,11 @@ pub fn handle_finish_mining_block_observer(
         return;
     }
 
-    // ИСПРАВЛЕНО: не меняем блок локально — ждём подтверждения от сервера.
-    // Это убирает «фантомные» блоки, когда сервер не засчитывает слом.
-    //
-    // Было:
-    // let fluid_state = FluidState::from(block_state);
-    // let block_state_for_fluid = BlockState::from(fluid_state);
-    // let old_state = world
-    //     .set_block_state(event.position, block_state_for_fluid)
-    //     .unwrap_or_default();
-    // prediction_handler.retain_known_server_state(event.position, old_state, **player_pos);
-    //
-    // Стало: только регистрируем намерение, не трогая World.
+    // Не меняем блок локально — ждём подтверждения от сервера.
     let _ = FluidState::from(block_state);
     prediction_handler.retain_known_server_state(event.position, block_state, **player_pos);
 }
 
-/// Abort mining a block.
 #[derive(Message)]
 pub struct StopMiningBlockEvent {
     pub entity: Entity,
@@ -623,8 +555,6 @@ pub fn continue_mining_block(
     ) in query.iter_mut()
     {
         if game_mode == GameMode::Creative {
-            // TODO: worldborder check
-            // ИСПРАВЛЕНО: было 5, стало 6
             **mine_delay = 6;
             commands.trigger(SendGamePacketEvent::new(
                 entity,
@@ -669,14 +599,10 @@ pub fn continue_mining_block(
                 active_effects,
             );
 
-            if **mine_ticks % 4. == 0. {
-                // vanilla makes a mining sound here
-            }
+            if **mine_ticks % 4. == 0. {}
             **mine_ticks += 1.;
 
             if **mine_progress >= 1. {
-                // MiningQueued is removed in case we were doing an infinite loop that
-                // repeatedly inserts MiningQueued
                 commands.entity(entity).remove::<(Mining, MiningQueued)>();
                 trace!("finished mining block at {:?}", mining.pos);
                 commands.trigger(FinishMiningBlockEvent {
@@ -694,7 +620,6 @@ pub fn continue_mining_block(
                 ));
                 **mine_progress = 0.;
                 **mine_ticks = 0.;
-                // ИСПРАВЛЕНО: было 5, стало 6
                 **mine_delay = 6;
             }
 
@@ -715,16 +640,20 @@ pub fn continue_mining_block(
     }
 }
 
+/// ИСПРАВЛЕНО: если mining.force == true — не трогаем Mining вообще.
+/// Это нужно, чтобы бот мог ломать блок, даже если HitResult не совпадает
+/// (например, после look_at, который обновляется не мгновенно).
 pub fn update_mining_component(
     mut commands: Commands,
     mut query: Query<(Entity, &mut Mining, &HitResultComponent)>,
 ) {
     for (entity, mut mining, hit_result_component) in &mut query.iter_mut() {
-        if let Some(block_hit_result) = hit_result_component.as_block_hit_result_if_not_miss() {
-            if mining.force && block_hit_result.block_pos != mining.pos {
-                continue;
-            }
+        // ГЛАВНОЕ ИСПРАВЛЕНИЕ
+        if mining.force {
+            continue;
+        }
 
+        if let Some(block_hit_result) = hit_result_component.as_block_hit_result_if_not_miss() {
             if mining.pos != block_hit_result.block_pos {
                 debug!(
                     "Updating Mining::pos from {:?} to {:?}",
@@ -734,10 +663,6 @@ pub fn update_mining_component(
             }
             mining.dir = block_hit_result.direction;
         } else {
-            if mining.force {
-                continue;
-            }
-
             debug!("Removing mining component because we're no longer looking at the block");
             commands.entity(entity).remove::<Mining>();
         }
