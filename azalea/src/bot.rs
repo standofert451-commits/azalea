@@ -131,10 +131,36 @@ impl Client {
     ///
     /// This won't turn the bot's head towards the block, so if that's necessary
     /// you'll have to do that yourself with [`look_at`](Client::look_at).
+    ///
+    /// ИСПРАВЛЕНО: теперь сначала ждём, пока компонент `Mining` появится
+    /// (он создаётся в `handle_mining_queued` на следующем GameTick после
+    /// `start_mining`), и только потом ждём его исчезновения. Раньше функция
+    /// сразу проверяла `is_none()` и выходила, не дождавшись создания `Mining`,
+    /// из-за чего блок фактически не копался.
     pub async fn mine(&self, position: BlockPos) {
         self.start_mining(position);
 
         let mut receiver = self.get_tick_broadcaster();
+
+        // Фаза 1: ждём появления Mining (до 10 тиков)
+        let mut appeared = false;
+        for _ in 0..10 {
+            if receiver.recv().await.is_err() {
+                return;
+            }
+            let ecs = self.ecs.read();
+            if ecs.get::<Mining>(self.entity).is_some() {
+                appeared = true;
+                break;
+            }
+        }
+        if !appeared {
+            // Mining так и не создался — блок либо instamine, либо
+            // check_is_interaction_restricted вернул true. Выходим.
+            return;
+        }
+
+        // Фаза 2: ждём исчезновения Mining (блок сломан)
         while receiver.recv().await.is_ok() {
             let ecs = self.ecs.read();
             if ecs.get::<Mining>(self.entity).is_none() {
